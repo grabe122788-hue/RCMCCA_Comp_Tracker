@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>RCMCCA Cloud Scorer</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+    <style>
+        :root { --pri: #2563eb; --sec: #64748b; --win: #16a34a; --err: #dc2626; --bg: #f8fafc; --text: #1e293b; }
+        body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 10px 10px 80px 10px; }
+        .card { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 15px; border: 1px solid #e2e8f0; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .timer-display { font-family: monospace; font-size: 2.8rem; text-align: center; font-weight: bold; margin: 5px 0; }
+        .timer-warn { color: var(--err); animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
+        .counter { background: #f1f5f9; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #e2e8f0; }
+        .counter label { font-size: 0.7rem; font-weight: bold; display: block; margin-bottom: 4px; text-transform: uppercase; color: var(--sec); }
+        button { padding: 10px; cursor: pointer; border-radius: 6px; border: 1px solid #cbd5e1; font-weight: bold; font-size: 1rem; }
+        .btn-main { width: 100%; background: var(--pri); color: white; border: none; padding: 16px; font-size: 1.2rem; margin-top: 10px; }
+        .total-display { font-size: 3.5rem; font-weight: 900; color: var(--err); text-align: center; margin: 10px 0; }
+        .point-out { border: 4px solid var(--err) !important; background: #fff1f2 !important; }
+        .hidden { display: none !important; }
+        input, select { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 1rem; }
+        
+        /* Navigation Bar */
+        .app-nav { position: fixed; bottom: 0; left: 0; width: 100%; height: 65px; background: white; display: flex; border-top: 1px solid #e2e8f0; z-index: 1000; }
+        .nav-item { flex: 1; text-decoration: none; color: var(--sec); display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: bold; }
+        .nav-item.active { color: var(--pri); }
+        .nav-item span { font-size: 1.4rem; }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #1e293b; color: white; padding: 10px; text-align: left; }
+        td { padding: 10px; border-bottom: 1px solid #f1f5f9; }
+        .rank-1 { background: #fef9c3; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div style="max-width: 600px; margin: auto;">
+
+    <div id="adminView" class="view-container hidden">
+        <div class="card">
+            <h3>⚙️ Event Setup</h3>
+            <label>Rule Version</label>
+            <select id="ruleVer" onchange="updateSettings()">
+                <option value="V1">Version 1 (50pt Cap / No Reverse Penalty)</option>
+                <option value="V2" selected>Version 2 (60pt Cap / +1 Reverse)</option>
+            </select>
+            <div style="margin-top:10px;">
+                <label>Course Names (Comma Separated)</label>
+                <input type="text" id="courseNames" placeholder="Course A, Course B..." onchange="updateSettings()">
+            </div>
+            <hr>
+            <h4>Audit Log</h4>
+            <div id="auditLog" style="max-height: 200px; overflow-y: auto;"></div>
+        </div>
+    </div>
+
+    <div id="judgeView" class="view-container">
+        <div class="card">
+            <div class="grid">
+                <input type="text" id="judgeId" placeholder="Judge Name">
+                <input type="text" id="driverName" placeholder="Driver Name">
+            </div>
+            <div class="grid" style="margin-top:10px;">
+                <select id="classSelect"><option>Class 1</option><option>Class 2</option><option>Class 3</option><option>Hardbody</option></select>
+                <select id="courseSelect"></select>
+            </div>
+        </div>
+
+        <div class="card">
+            <div id="timerDisplay" class="timer-display">00:00.0</div>
+            <div class="grid">
+                <button onclick="startTimer()" style="background:#dcfce7; color:#166534">START</button>
+                <button onclick="pauseTimer()" style="background:#fee2e2; color:#991b1b">PAUSE</button>
+            </div>
+            <button onclick="resetTimer()" style="width:100%; margin-top:8px;">RESET TIMER</button>
+        </div>
+
+        <div class="card" id="scorerCard">
+            <div class="grid">
+                <div class="counter"><label>Gate (+10)</label><button onclick="adj('gate',-1)">-</button> <span id="gate">0</span> <button onclick="adj('gate',1)">+</button></div>
+                <div class="counter"><label>Reverse (+1)</label><button onclick="adj('rev',-1)">-</button> <span id="rev">0</span> <button onclick="adj('rev',1)">+</button></div>
+                <div class="counter"><label>Boundary (+10)</label><button onclick="adj('bound',-1)">-</button> <span id="bound">0</span> <button onclick="adj('bound',1)">+</button></div>
+                <div class="counter"><label>Rollover (+5)</label><button onclick="adj('roll',-1)">-</button> <span id="roll">0</span> <button onclick="adj('roll',1)">+</button></div>
+                <div class="counter" style="background:#dcfce7"><label>Prog (-2)</label><button onclick="adj('prog',-1)">-</button> <span id="prog">0</span> <button onclick="adj('prog',1)">+</button></div>
+                <div class="counter" style="background:#dcfce7"><label>Bonus (-10)</label><button onclick="adj('bonus',-1)">-</button> <span id="bonus">0</span> <button onclick="adj('bonus',1)">+</button></div>
+            </div>
+            <div class="total-display" id="totalDisplay">0</div>
+            <div style="text-align: center;"><label><input type="checkbox" id="dnf" onchange="calc()"> DNF (+50 Points)</label></div>
+            <button class="btn-main" onclick="saveRun()">SUBMIT RUN</button>
+        </div>
+    </div>
+
+    <div id="spectatorView" class="view-container hidden">
+        <div class="card">
+            <h2 id="boardHeader" style="text-align:center;">STANDINGS</h2>
+            <table id="leaderTable">
+                <thead><tr><th>Driver</th><th>Score</th><th>Total Time</th></tr></thead>
+                <tbody></tbody>
+            </table>
+            <div class="grid" style="margin-top:20px;">
+                <button onclick="exportCSV()">CSV</button>
+                <button onclick="exportPDF()" style="background:#1e293b; color:white;">PDF REPORT</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="lookupView" class="view-container hidden">
+        <div class="card">
+            <h2>Driver Lookup</h2>
+            <input type="text" id="lookupSearch" placeholder="Search Name..." oninput="renderLookup()">
+            <div id="lookupResults" style="margin-top:15px;"></div>
+        </div>
+    </div>
+
+</div>
+
+<nav class="app-nav">
+    <a href="index.html" class="nav-item active" id="nav-judge"><span>⚖️</span>Judge</a>
+    <a href="?view=spectator" class="nav-item" id="nav-spectator"><span>🏆</span>Standings</a>
+    <a href="?view=lookup" class="nav-item" id="nav-lookup"><span>🔍</span>Lookup</a>
+    <a href="?view=admin" class="nav-item" id="nav-admin"><span>⚙️</span>Admin</a>
+</nav>
+
+<script type="module">
+  // Import the functions you need from the SDKs you need
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
+  import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-analytics.js";
+  // TODO: Add SDKs for Firebase products that you want to use
+  // https://firebase.google.com/docs/web/setup#available-libraries
+
+  // Your web app's Firebase configuration
+  // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+  const firebaseConfig = {
+    apiKey: "AIzaSyDsk0oqj1tDaDNCh0N-wgBmX3NwT5vC5tU",
+    authDomain: "rcmcca-crawl-scoring-app.firebaseapp.com",
+    projectId: "rcmcca-crawl-scoring-app",
+    storageBucket: "rcmcca-crawl-scoring-app.firebasestorage.app",
+    messagingSenderId: "1055450823758",
+    appId: "1:1055450823758:web:6f4e83e73edaea4b16571f",
+    measurementId: "G-HV78KEJ40T"
+  };
+
+  // Initialize Firebase
+  const app = initializeApp(firebaseConfig);
+  const analytics = getAnalytics(app);
+</script>
+
+<script>
+    // --- 1. FIREBASE CONFIG ---
+    const firebaseConfig = { apiKey: "YAIzaSyDsk0oqj1tDaDNCh0N-wgBmX3NwT5vC5tU", databaseURL: "https://YOUR_ID.firebaseio.com" };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    // --- 2. GLOBAL STATE ---
+    const params = new URLSearchParams(window.location.search);
+    let scores = { gate:0, rev:0, bound:0, roll:0, prog:0, bonus:0 };
+    let tInt, sTime, eTime = 0;
+    let cloudData = {};
+    const classes = ["Class 1", "Class 2", "Class 3", "Hardbody"];
+    let classIdx = 0;
+
+    // --- 3. ROUTING ---
+    const view = params.get('view') || 'judge';
+    document.querySelectorAll('.view-container').forEach(v => v.classList.add('hidden'));
+    document.getElementById(view + 'View').classList.remove('hidden');
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.getElementById('nav-' + view).classList.add('active');
+    if(view === 'spectator') setInterval(cycleClasses, 8000);
+
+    // --- 4. TIMER & SCORING ---
+    function startTimer() { if(!tInt){ sTime = Date.now()-eTime; tInt = setInterval(uTime, 100); } }
+    function pauseTimer() { clearInterval(tInt); tInt=null; }
+    function resetTimer() { pauseTimer(); eTime=0; document.getElementById('timerDisplay').innerText="00:00.0"; }
+    function uTime() {
+        eTime = Date.now()-sTime;
+        if(eTime > 360000) document.getElementById('timerDisplay').classList.add('timer-warn');
+        const m = Math.floor(eTime/60000).toString().padStart(2,'0');
+        const s = Math.floor((eTime%60000)/1000).toString().padStart(2,'0');
+        const t = Math.floor((eTime%1000)/100);
+        document.getElementById('timerDisplay').innerText=`${m}:${s}.${t}`;
+    }
+
+    function adj(k,v) { scores[k]=Math.max(0, scores[k]+v); document.getElementById(k).innerText=scores[k]; calc(); }
+    function calc() {
+        const ver = document.getElementById('ruleVer').value;
+        const limit = ver === "V1" ? 50 : 60;
+        let pen = (scores.gate*10) + (scores.bound*10) + (scores.roll*5) + (ver==="V2"?scores.rev:0);
+        if(pen >= limit) { pen = limit; document.getElementById('scorerCard').classList.add('point-out'); }
+        else { document.getElementById('scorerCard').classList.remove('point-out'); }
+        let total = pen + (scores.prog*-2);
+        if(!document.getElementById('dnf').checked) total += (scores.bonus*-10);
+        else total += 50;
+        document.getElementById('totalDisplay').innerText = total;
+        return total;
+    }
+
+    // --- 5. DATA SYNC ---
+    function updateSettings() {
+        db.ref('settings').set({ courses: document.getElementById('courseNames').value, ver: document.getElementById('ruleVer').value });
+    }
+    db.ref('settings').on('value', s => {
+        const d = s.val() || { courses: "Course 1", ver: "V2" };
+        document.getElementById('ruleVer').value = d.ver;
+        document.getElementById('courseSelect').innerHTML = d.courses.split(',').map(c=>`<option>${c.trim()}</option>`).join('');
+    });
+
+    function saveRun() {
+        if(!confirm("Submit Score?")) return;
+        const data = { driver: document.getElementById('driverName').value || "Unknown", score: calc(), time: document.getElementById('timerDisplay').innerText, class: document.getElementById('classSelect').value, course: document.getElementById('courseSelect').value, judge: document.getElementById('judgeId').value || "Staff", ts: Date.now() };
+        db.ref('runs').push(data).then(() => location.reload());
+    }
+
+    db.ref('runs').on('value', snap => {
+        cloudData = snap.val() || {};
+        if(view === 'admin') renderAudit();
+        if(view === 'spectator') renderBoard();
+    });
+
+    // --- 6. RENDERERS ---
+    function cycleClasses() { classIdx = (classIdx + 1) % classes.length; renderBoard(); }
+    function renderBoard() {
+        const c = classes[classIdx];
+        document.getElementById('boardHeader').innerText = "LIVE: " + c;
+        const sum = {};
+        Object.values(cloudData).filter(r => r.class === c).forEach(r => {
+            if(!sum[r.driver]) sum[r.driver] = { name:r.driver, score:0, times:[] };
+            sum[r.driver].score += r.score; sum[r.driver].times.push(r.time);
+        });
+        const s = Object.values(sum).sort((a,b)=>a.score-b.score);
+        document.querySelector("#leaderTable tbody").innerHTML = s.map((r,i)=>`<tr class="${i===0?'rank-1':''}"><td>${i+1}. ${r.name}</td><td>${r.score}</td><td>${sumTimes(r.times)}</td></tr>`).join('');
+    }
+
+    function sumTimes(arr) {
+        let ms = 0; arr.forEach(t => { const [m,st] = t.split(':'); const [s, tenth] = st.split('.'); ms += (parseInt(m)*60000)+(parseInt(s)*1000)+(parseInt(tenth)*100); });
+        const m = Math.floor(ms/60000); const s = Math.floor((ms%60000)/1000); const t = Math.floor((ms%1000)/100);
+        return `${m}:${s.toString().padStart(2,'0')}.${t}`;
+    }
+
+    function renderAudit() {
+        document.getElementById('auditLog').innerHTML = Object.entries(cloudData).reverse().map(([k,r]) => `<div style="padding:5px; border-bottom:1px solid #eee; display:flex; justify-content:space-between;"><span>${r.driver} (${r.score})</span><button onclick="db.ref('runs').child('${k}').remove()" style="background:var(--err); color:white; padding:2px 5px;">DEL</button></div>`).join('');
+    }
+
+    function renderLookup() {
+        const q = document.getElementById('lookupSearch').value.toLowerCase();
+        document.getElementById('lookupResults').innerHTML = Object.values(cloudData).filter(r => r.driver.toLowerCase().includes(q)).map(r => `<div class="card" style="border-left:5px solid var(--pri)"><b>${r.course} (${r.class})</b><br>Score: ${r.score} | Time: ${r.time}</div>`).join('');
+    }
+
+    async function exportPDF() { const { jsPDF } = window.jspdf; const doc = new jsPDF(); doc.text("RCMCCA Official Standings", 14, 15); doc.autoTable({ head:[['Driver','Class','Score','Time']], body: Object.values(cloudData).map(r=>[r.driver, r.class, r.score, r.time]), startY: 20 }); doc.save("Results.pdf"); }
+</script>
+</body>
+</html>
